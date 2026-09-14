@@ -2,15 +2,12 @@ name: Monitor Flashscore 24/7
 
 on:
   schedule:
-    # Se ejecuta cada 10 minutos (cron syntax)
-    - cron: '*/10 * * * *'
-  # Permite ejecutarlo manualmente desde la pestaña Actions de GitHub para probar
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 jobs:
   scrape-and-notify:
     runs-on: ubuntu-latest
-
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
@@ -19,14 +16,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: Instalar dependencias Python
         run: |
           python -m pip install --upgrade pip
           pip install playwright beautifulsoup4 requests
 
-      - name: Instalar Playwright Chromium con dependencias del sistema
+      - name: Instalar Playwright Chromium con dependencias
         run: |
           python -m playwright install --with-deps chromium
 

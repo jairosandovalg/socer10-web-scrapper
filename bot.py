@@ -1,11 +1,11 @@
 import sys
 import os
+import time
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 # --- CONFIGURACIÓN DE TELEGRAM ---
-# Se leen desde Secrets de GitHub por seguridad (o valores por defecto)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8923959866:AAES1dc4LAsedUKUsGR4p5D1SkaMt7nKyes")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7272170952")
 
@@ -27,28 +27,11 @@ def enviar_alerta_telegram(mensaje: str) -> bool:
 def cumple_criterios_alerta(partido: dict) -> bool:
     """
     ESPACIO PARA TUS FILTROS:
-    Modifica esta función para definir cuándo debe enviarse una alerta.
-    Retorna True si cumple las condiciones, False en caso contrario.
+    Retorna True si cumple las condiciones para alertar.
     """
-    minuto_str = partido.get("Minuto", "").replace("'", "").strip()
     marcador = partido.get("Marcador", "")
-    stats = partido.get("Stats", {})
-
-    # Ejemplo de filtro básico (actualmente activado para que pase todo lo válido):
-    # Condición actual: que el partido tenga marcador válido detectado
     if marcador == "- - -" or not marcador:
         return False
-
-    # EJEMPLOS DE FILTROS QUE PODRÁS DESCOMENTAR:
-    # 1. Filtrar por minuto:
-    # if minuto_str.isdigit() and int(minuto_str) >= 70:
-    #     return True
-
-    # 2. Filtrar por tiros a puerta (si existen en las stats extraídas):
-    # tiros_local = int(stats.get("Tiros a puerta (L)", 0))
-    # if tiros_local >= 4:
-    #     return True
-
     return True
 
 def formatear_mensaje_partido(reg: dict) -> str:
@@ -56,8 +39,27 @@ def formatear_mensaje_partido(reg: dict) -> str:
     stats = reg.get("Stats", {})
     stats_texto = ""
     if stats:
-        stats_lineas = [f"• {k}: {v}" for k, v in stats.items()]
-        stats_texto = "\n\n📊 <b>Estadísticas:</b>\n" + "\n".join(stats_lineas[:8])
+        # Formatear estadísticas principales emparejadas (Local vs Visitante)
+        lineas = []
+        metricas_procesadas = set()
+        
+        for k, v in stats.items():
+            if " (L)" in k:
+                metrica = k.replace(" (L)", "")
+                val_l = v
+                val_v = stats.get(f"{metrica} (V)", "-")
+                lineas.append(f"• <b>{metrica}:</b> {val_l} | {val_v}")
+                metricas_procesadas.add(metrica)
+            elif " (V)" in k:
+                metrica = k.replace(" (V)", "")
+                if metrica not in metricas_procesadas:
+                    val_l = stats.get(f"{metrica} (L)", "-")
+                    val_v = v
+                    lineas.append(f"• <b>{metrica}:</b> {val_l} | {val_v}")
+                    metricas_procesadas.add(metrica)
+
+        if lineas:
+            stats_texto = "\n\n📊 <b>Estadísticas Principales (L | V):</b>\n" + "\n".join(lineas)
 
     return (
         f"⚽ <b>ALERTA DE PARTIDO</b>\n\n"
@@ -79,12 +81,18 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
     page = None
     try:
         page = playwright_context.new_page()
-        page.goto(url_partido, timeout=25000, wait_until="domcontentloaded")
-        page.wait_for_selector("div.detailScore__wrapper", timeout=10000)
+        page.goto(url_partido, timeout=30000, wait_until="domcontentloaded")
+        
+        # 1. Esperar al marcador
+        try:
+            page.wait_for_selector("div.detailScore__wrapper", timeout=8000)
+        except Exception:
+            pass
 
+        # 2. ESPERA Y EXTRACCIÓN DE CUOTAS (Tu bloque funcional)
         try:
             page.wait_for_selector("button[data-analytics-bookmaker-id='660']", timeout=4000)
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(1200)
         except Exception:
             pass
 
@@ -92,7 +100,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
 
         score = soup.select_one("div.detailScore__wrapper")
         if score:
-            datos_partido["Marcador"] = score.get_text(strip=True)
+            datos_partido["Marcador"] = score.get_text(separator=" ", strip=True)
 
         status = soup.select_one("span.fixedHeaderDuel__detailStatus")
         if status:
@@ -102,28 +110,108 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
         if minuto:
             datos_partido["Minuto"] = minuto.get_text(strip=True)
 
+        # Extracción de cuotas con Bookmaker 660 (y respaldo si varía el id)
         botones = soup.find_all("button", {"data-analytics-bookmaker-id": "660"})
         valores = []
         for btn in botones:
             span = btn.find("span", {"data-testid": "wcl-oddsValue"})
-            if span:
+            if span and span.get_text(strip=True):
                 valores.append(span.get_text(strip=True))
+
+        if len(valores) < 3:
+            botones_genericos = soup.find_all("button", attrs={"data-analytics-bookmaker-id": True})
+            for btn in botones_genericos:
+                span = btn.find("span", {"data-testid": "wcl-oddsValue"})
+                if span and span.get_text(strip=True):
+                    valores.append(span.get_text(strip=True))
+                if len(valores) == 3:
+                    break
 
         if len(valores) >= 3:
             datos_partido["Cuotas"] = f"1:{valores[0]} X:{valores[1]} 2:{valores[2]}"
 
-        selector_boton = "//button[@role='tab' and contains(., 'Estadísticas')]"
-        if page.locator(selector_boton).count() > 0:
-            page.locator(selector_boton).first.click(force=True)
+        # 3. CAMBIAR A LA PESTAÑA "ESTADÍSTICAS" (Selector corregido a <a>)
+        selector_stats = 'a[data-analytics-alias="match-statistics"], a[role="tab"]:has-text("Estadísticas")'
+        tab_stats = page.locator(selector_stats)
+        if tab_stats.count() > 0:
+            try:
+                clases = tab_stats.first.get_attribute("class") or ""
+                if "active" not in clases:
+                    tab_stats.first.click(force=True)
+                    page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
+        # Sub-pestaña "Partido" acumulado (alias 74)
+        tab_partido = page.locator('a[data-analytics-alias="74"], a:has-text("Partido")')
+        if tab_partido.count() > 0:
+            try:
+                clases_sub = tab_partido.first.get_attribute("class") or ""
+                if "active" not in clases_sub:
+                    tab_partido.first.click(force=True)
+                    page.wait_for_timeout(600)
+            except Exception:
+                pass
+
+        # Esperar a que el bloque de estadísticas se monte en el DOM
+        try:
+            page.wait_for_selector('[data-testid="statGroup"], [data-testid="wcl-statistics"], .tabContent__match-statistics', timeout=5000)
+        except Exception:
             page.wait_for_timeout(1000)
-            soup_s = BeautifulSoup(page.content(), "html.parser")
-            for fila in soup_s.find_all("div", {"data-testid": "wcl-statistics"}):
-                cat = fila.find("div", {"data-testid": "wcl-statistics-category"})
-                if cat:
-                    h = fila.find("div", class_=lambda x: x and 'wcl-homeValue' in x)
-                    v = fila.find("div", class_=lambda x: x and 'wcl-awayValue' in x)
-                    datos_partido["Stats"][f"{cat.get_text(strip=True)} (L)"] = h.get_text(strip=True) if h else "0"
-                    datos_partido["Stats"][f"{cat.get_text(strip=True)} (V)"] = v.get_text(strip=True) if v else "0"
+
+        # 4. EXTRAER EXCLUSIVAMENTE LAS ESTADÍSTICAS PRINCIPALES
+        soup_s = BeautifulSoup(page.content(), "html.parser")
+        
+        primer_grupo = None
+        for grupo in soup_s.select('div[data-testid="statGroup"]'):
+            titulo = grupo.select_one('[data-testid="wcl-headerSection-text"]')
+            if titulo and "principal" in titulo.get_text(strip=True).lower():
+                primer_grupo = grupo
+                break
+
+        if not primer_grupo:
+            grupos = soup_s.select('div[data-testid="statGroup"]')
+            if grupos:
+                primer_grupo = grupos[0]
+            else:
+                primer_grupo = soup_s.select_one('div.tabContent__match-statistics') or soup_s
+
+        if primer_grupo:
+            # A. Filas estándar (xG, Posesión, Pases, Faltas, etc.)
+            for fila in primer_grupo.select('[data-testid="wcl-statistics"], [class*="wcl-labelRow_"]'):
+                nombre_el = (
+                    fila.select_one('[class*="wcl-name_"]') or
+                    fila.select_one('[class*="wcl-label_"]') or
+                    fila.select_one('[data-testid*="category"]')
+                )
+                vals = fila.select('[class*="wcl-value_"]')
+                if nombre_el and len(vals) >= 2:
+                    nombre = nombre_el.get_text(strip=True)
+                    if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
+                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0].get_text(strip=True)
+                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1].get_text(strip=True)
+
+            # B. Barras de remates (Remates a puerta / fuera)
+            for shot_bar in primer_grupo.select('[class*="wcl-shotOnTargetStats_"]'):
+                nombre_el = shot_bar.select_one('[class*="wcl-label_"]')
+                vals = shot_bar.select('[class*="wcl-value_"]')
+                if nombre_el and len(vals) >= 2:
+                    nombre = nombre_el.get_text(strip=True)
+                    if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
+                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0].get_text(strip=True)
+                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1].get_text(strip=True)
+
+            # C. Córneres y tarjetas (Badges SVG)
+            for badge in primer_grupo.select('[class*="wcl-incidentValueBadge_"]'):
+                spans = badge.find_all("span", recursive=False)
+                svg = badge.find("svg")
+                if len(spans) >= 2 and svg:
+                    svg_id = svg.get("data-testid", "").lower()
+                    nombre = "Córneres" if "corner" in svg_id else ("Tarjetas amarillas" if "yellow" in svg_id else "Tarjetas rojas")
+                    if f"{nombre} (L)" not in datos_partido["Stats"]:
+                        datos_partido["Stats"][f"{nombre} (L)"] = spans[0].get_text(strip=True)
+                        datos_partido["Stats"][f"{nombre} (V)"] = spans[-1].get_text(strip=True)
+
     except Exception as e:
         print(f"Error procesando {url_partido}: {e}")
     finally:
@@ -136,13 +224,15 @@ def ejecutar_escaneo():
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
         )
-        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
         main = context.new_page()
 
         try:
-            main.goto("https://www.flashscore.pe/", timeout=30000)
+            main.goto("https://www.flashscore.pe/", timeout=35000, wait_until="domcontentloaded")
             btn_live = "//div[contains(@class, 'filters__text') and text()='EN DIRECTO']"
             main.wait_for_selector(btn_live, timeout=15000)
             main.locator(btn_live).click()
@@ -153,7 +243,6 @@ def ejecutar_escaneo():
 
             if not partidos:
                 print("No hay partidos en directo actualmente.")
-                browser.close()
                 return
 
             print(f"Partidos encontrados: {len(partidos)}. Analizando los 10 primeros...")
@@ -175,7 +264,6 @@ def ejecutar_escaneo():
                     "Stats": data["Stats"]
                 }
 
-                # Verificación de filtros
                 if cumple_criterios_alerta(partido_completo):
                     print(f"Alerta válida: {nombre_partido}. Enviando a Telegram...")
                     mensaje = formatear_mensaje_partido(partido_completo)

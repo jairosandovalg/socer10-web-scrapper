@@ -25,10 +25,6 @@ def enviar_alerta_telegram(mensaje: str) -> bool:
         return False
 
 def cumple_criterios_alerta(partido: dict) -> bool:
-    """
-    ESPACIO PARA TUS FILTROS:
-    Retorna True si cumple las condiciones para alertar.
-    """
     marcador = partido.get("Marcador", "")
     if marcador == "- - -" or not marcador:
         return False
@@ -39,7 +35,6 @@ def formatear_mensaje_partido(reg: dict) -> str:
     stats = reg.get("Stats", {})
     stats_texto = ""
     if stats:
-        # Formatear estadísticas principales emparejadas (Local vs Visitante)
         lineas = []
         metricas_procesadas = set()
         
@@ -89,7 +84,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
         except Exception:
             pass
 
-        # 2. ESPERA Y EXTRACCIÓN DE CUOTAS (Tu bloque funcional)
+        # 2. ESPERA Y EXTRACCIÓN DE CUOTAS
         try:
             page.wait_for_selector("button[data-analytics-bookmaker-id='660']", timeout=4000)
             page.wait_for_timeout(1200)
@@ -110,7 +105,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
         if minuto:
             datos_partido["Minuto"] = minuto.get_text(strip=True)
 
-        # Extracción de cuotas con Bookmaker 660 (y respaldo si varía el id)
+        # Cuotas
         botones = soup.find_all("button", {"data-analytics-bookmaker-id": "660"})
         valores = []
         for btn in botones:
@@ -130,7 +125,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
         if len(valores) >= 3:
             datos_partido["Cuotas"] = f"1:{valores[0]} X:{valores[1]} 2:{valores[2]}"
 
-        # 3. CAMBIAR A LA PESTAÑA "ESTADÍSTICAS" (Selector corregido a <a>)
+        # 3. CAMBIAR A LA PESTAÑA "ESTADÍSTICAS"
         selector_stats = 'a[data-analytics-alias="match-statistics"], a[role="tab"]:has-text("Estadísticas")'
         tab_stats = page.locator(selector_stats)
         if tab_stats.count() > 0:
@@ -184,33 +179,44 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
                     fila.select_one('[class*="wcl-label_"]') or
                     fila.select_one('[data-testid*="category"]')
                 )
-                vals = fila.select('[class*="wcl-value_"]')
+                vals = [v.get_text(strip=True) for v in fila.select('[class*="wcl-value_"]') if v.get_text(strip=True)]
                 if nombre_el and len(vals) >= 2:
                     nombre = nombre_el.get_text(strip=True)
                     if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
-                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0].get_text(strip=True)
-                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1].get_text(strip=True)
+                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0]
+                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1]
 
             # B. Barras de remates (Remates a puerta / fuera)
             for shot_bar in primer_grupo.select('[class*="wcl-shotOnTargetStats_"]'):
                 nombre_el = shot_bar.select_one('[class*="wcl-label_"]')
-                vals = shot_bar.select('[class*="wcl-value_"]')
+                vals = [v.get_text(strip=True) for v in shot_bar.select('[class*="wcl-value_"]') if v.get_text(strip=True)]
                 if nombre_el and len(vals) >= 2:
                     nombre = nombre_el.get_text(strip=True)
                     if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
-                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0].get_text(strip=True)
-                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1].get_text(strip=True)
+                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0]
+                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1]
 
-            # C. Córneres y tarjetas (Badges SVG)
-            for badge in primer_grupo.select('[class*="wcl-incidentValueBadge_"]'):
-                spans = badge.find_all("span", recursive=False)
+            # C. Córneres y tarjetas (Badges SVG e incidentes sin restricciones de jerarquía)
+            for badge in primer_grupo.select('[class*="wcl-incidentValueBadge_"], [data-testid*="incident"]'):
+                spans = [s.get_text(strip=True) for s in badge.find_all("span") if s.get_text(strip=True)]
                 svg = badge.find("svg")
                 if len(spans) >= 2 and svg:
-                    svg_id = svg.get("data-testid", "").lower()
-                    nombre = "Córneres" if "corner" in svg_id else ("Tarjetas amarillas" if "yellow" in svg_id else "Tarjetas rojas")
-                    if f"{nombre} (L)" not in datos_partido["Stats"]:
-                        datos_partido["Stats"][f"{nombre} (L)"] = spans[0].get_text(strip=True)
-                        datos_partido["Stats"][f"{nombre} (V)"] = spans[-1].get_text(strip=True)
+                    svg_testid = (svg.get("data-testid") or "").lower()
+                    svg_class = " ".join(svg.get("class", [])).lower()
+
+                    nombre = None
+                    if "corner" in svg_testid or "corner" in svg_class:
+                        nombre = "Córneres"
+                    elif "yellow" in svg_testid or "yellow" in svg_class:
+                        nombre = "Tarjetas amarillas"
+                    elif "red" in svg_testid or "red" in svg_class:
+                        nombre = "Tarjetas rojas"
+                    elif "card" in svg_testid or "card" in svg_class:
+                        nombre = "Tarjetas"
+
+                    if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
+                        datos_partido["Stats"][f"{nombre} (L)"] = spans[0]
+                        datos_partido["Stats"][f"{nombre} (V)"] = spans[-1]
 
     except Exception as e:
         print(f"Error procesando {url_partido}: {e}")

@@ -31,27 +31,16 @@ def cumple_criterios_alerta(partido: dict) -> bool:
     return True
 
 def formatear_mensaje_partido(reg: dict) -> str:
-    """Da formato visual al mensaje con negritas y emojis."""
+    """Formatea el mensaje mostrando única y exclusivamente las Estadísticas Principales."""
     stats = reg.get("Stats", {})
     stats_texto = ""
+    
     if stats:
         lineas = []
-        metricas_procesadas = set()
-        
-        for k, v in stats.items():
-            if " (L)" in k:
-                metrica = k.replace(" (L)", "")
-                val_l = v
-                val_v = stats.get(f"{metrica} (V)", "-")
-                lineas.append(f"• <b>{metrica}:</b> {val_l} | {val_v}")
-                metricas_procesadas.add(metrica)
-            elif " (V)" in k:
-                metrica = k.replace(" (V)", "")
-                if metrica not in metricas_procesadas:
-                    val_l = stats.get(f"{metrica} (L)", "-")
-                    val_v = v
-                    lineas.append(f"• <b>{metrica}:</b> {val_l} | {val_v}")
-                    metricas_procesadas.add(metrica)
+        for metrica, valores in stats.items():
+            val_l = valores.get("L", "-")
+            val_v = valores.get("V", "-")
+            lineas.append(f"• <b>{metrica}:</b> {val_l} | {val_v}")
 
         if lineas:
             stats_texto = "\n\n📊 <b>Estadísticas Principales (L | V):</b>\n" + "\n".join(lineas)
@@ -71,7 +60,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
         "Cuotas": "- - -",
         "Tiempo/Estado": "-",
         "Minuto": "-",
-        "Stats": {}
+        "Stats": {}  # Estructura: {"Goles esperados (xG)": {"L": "0.47", "V": "0.32"}}
     }
     page = None
     try:
@@ -105,7 +94,6 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
         if minuto:
             datos_partido["Minuto"] = minuto.get_text(strip=True)
 
-        # Cuotas
         botones = soup.find_all("button", {"data-analytics-bookmaker-id": "660"})
         valores = []
         for btn in botones:
@@ -125,7 +113,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
         if len(valores) >= 3:
             datos_partido["Cuotas"] = f"1:{valores[0]} X:{valores[1]} 2:{valores[2]}"
 
-        # 3. CAMBIAR A LA PESTAÑA "ESTADÍSTICAS"
+        # 3. NAVEGAR A LA PESTAÑA "ESTADÍSTICAS"
         selector_stats = 'a[data-analytics-alias="match-statistics"], a[role="tab"]:has-text("Estadísticas")'
         tab_stats = page.locator(selector_stats)
         if tab_stats.count() > 0:
@@ -148,7 +136,6 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
             except Exception:
                 pass
 
-        # Esperar a que el bloque de estadísticas se monte en el DOM
         try:
             page.wait_for_selector('[data-testid="statGroup"], [data-testid="wcl-statistics"], .tabContent__match-statistics', timeout=5000)
         except Exception:
@@ -168,55 +155,56 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
             grupos = soup_s.select('div[data-testid="statGroup"]')
             if grupos:
                 primer_grupo = grupos[0]
-            else:
-                primer_grupo = soup_s.select_one('div.tabContent__match-statistics') or soup_s
 
+        # EXTRACCIÓN ESTRICTA DENTRO DE ESE ÚNICO BLOQUE
         if primer_grupo:
-            # A. Filas estándar (xG, Posesión, Pases, Faltas, etc.)
-            for fila in primer_grupo.select('[data-testid="wcl-statistics"], [class*="wcl-labelRow_"]'):
-                nombre_el = (
-                    fila.select_one('[class*="wcl-name_"]') or
-                    fila.select_one('[class*="wcl-label_"]') or
-                    fila.select_one('[data-testid*="category"]')
-                )
-                vals = [v.get_text(strip=True) for v in fila.select('[class*="wcl-value_"]') if v.get_text(strip=True)]
-                if nombre_el and len(vals) >= 2:
-                    nombre = nombre_el.get_text(strip=True)
-                    if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
-                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0]
-                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1]
+            # Recorremos los elementos directos o subcontenedores de este grupo
+            for elemento in primer_grupo.find_all(True, recursive=True):
+                tag_classes = " ".join(elemento.get("class", []))
+                tag_testid = elemento.get("data-testid", "")
 
-            # B. Barras de remates (Remates a puerta / fuera)
-            for shot_bar in primer_grupo.select('[class*="wcl-shotOnTargetStats_"]'):
-                nombre_el = shot_bar.select_one('[class*="wcl-label_"]')
-                vals = [v.get_text(strip=True) for v in shot_bar.select('[class*="wcl-value_"]') if v.get_text(strip=True)]
-                if nombre_el and len(vals) >= 2:
-                    nombre = nombre_el.get_text(strip=True)
-                    if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
-                        datos_partido["Stats"][f"{nombre} (L)"] = vals[0]
-                        datos_partido["Stats"][f"{nombre} (V)"] = vals[-1]
+                # Caso A: Fila estándar (xG, Posesión, Pases, Faltas, Fuera de juego, etc.)
+                if tag_testid == "wcl-statistics" or "wcl-labelRow_" in tag_classes:
+                    nombre_el = (
+                        elemento.select_one('[class*="wcl-name_"]') or
+                        elemento.select_one('[class*="wcl-label_"]') or
+                        elemento.select_one('[data-testid*="category"]')
+                    )
+                    vals = [v.get_text(strip=True) for v in elemento.select('[class*="wcl-value_"]') if v.get_text(strip=True)]
+                    if nombre_el and len(vals) >= 2:
+                        nombre = nombre_el.get_text(strip=True)
+                        if nombre and nombre not in datos_partido["Stats"]:
+                            datos_partido["Stats"][nombre] = {"L": vals[0], "V": vals[-1]}
 
-            # C. Córneres y tarjetas (Badges SVG e incidentes sin restricciones de jerarquía)
-            for badge in primer_grupo.select('[class*="wcl-incidentValueBadge_"], [data-testid*="incident"]'):
-                spans = [s.get_text(strip=True) for s in badge.find_all("span") if s.get_text(strip=True)]
-                svg = badge.find("svg")
-                if len(spans) >= 2 and svg:
-                    svg_testid = (svg.get("data-testid") or "").lower()
-                    svg_class = " ".join(svg.get("class", [])).lower()
+                # Caso B: Barras de remates (Remates a puerta, fuera, etc.)
+                elif "wcl-shotOnTargetStats_" in tag_classes:
+                    nombre_el = elemento.select_one('[class*="wcl-label_"]')
+                    vals = [v.get_text(strip=True) for v in elemento.select('[class*="wcl-value_"]') if v.get_text(strip=True)]
+                    if nombre_el and len(vals) >= 2:
+                        nombre = nombre_el.get_text(strip=True)
+                        if nombre and nombre not in datos_partido["Stats"]:
+                            datos_partido["Stats"][nombre] = {"L": vals[0], "V": vals[-1]}
 
-                    nombre = None
-                    if "corner" in svg_testid or "corner" in svg_class:
-                        nombre = "Córneres"
-                    elif "yellow" in svg_testid or "yellow" in svg_class:
-                        nombre = "Tarjetas amarillas"
-                    elif "red" in svg_testid or "red" in svg_class:
-                        nombre = "Tarjetas rojas"
-                    elif "card" in svg_testid or "card" in svg_class:
-                        nombre = "Tarjetas"
+                # Caso C: Badges con iconos SVG (Córneres y Tarjetas)
+                elif "wcl-incidentValueBadge_" in tag_classes or "incident" in tag_testid:
+                    spans = [s.get_text(strip=True) for s in elemento.find_all("span") if s.get_text(strip=True)]
+                    svg = elemento.find("svg")
+                    if len(spans) >= 2 and svg:
+                        svg_testid = (svg.get("data-testid") or "").lower()
+                        svg_class = " ".join(svg.get("class", [])).lower()
 
-                    if nombre and f"{nombre} (L)" not in datos_partido["Stats"]:
-                        datos_partido["Stats"][f"{nombre} (L)"] = spans[0]
-                        datos_partido["Stats"][f"{nombre} (V)"] = spans[-1]
+                        nombre = None
+                        if "corner" in svg_testid or "corner" in svg_class:
+                            nombre = "Córneres"
+                        elif "yellow" in svg_testid or "yellow" in svg_class:
+                            nombre = "Tarjetas amarillas"
+                        elif "red" in svg_testid or "red" in svg_class:
+                            nombre = "Tarjetas rojas"
+                        elif "card" in svg_testid or "card" in svg_class:
+                            nombre = "Tarjetas"
+
+                        if nombre and nombre not in datos_partido["Stats"]:
+                            datos_partido["Stats"][nombre] = {"L": spans[0], "V": spans[-1]}
 
     except Exception as e:
         print(f"Error procesando {url_partido}: {e}")

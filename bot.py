@@ -34,11 +34,10 @@ def formatear_mensaje_partido(reg: dict) -> str:
     """Da formato visual al mensaje con negritas y emojis."""
     stats = reg.get("Stats", {})
     stats_texto = ""
-    
     if stats:
         lineas = []
         metricas_procesadas = set()
-        
+
         for k, v in stats.items():
             if " (L)" in k:
                 metrica = k.replace(" (L)", "")
@@ -78,7 +77,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
     try:
         page = playwright_context.new_page()
         page.goto(url_partido, timeout=30000, wait_until="domcontentloaded")
-        
+
         # 1. Esperar al marcador
         try:
             page.wait_for_selector("div.detailScore__wrapper", timeout=8000)
@@ -126,7 +125,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
         if len(valores) >= 3:
             datos_partido["Cuotas"] = f"1:{valores[0]} X:{valores[1]} 2:{valores[2]}"
 
-        # 3. NAVEGAR A LA PESTAÑA "ESTADÍSTICAS"
+        # 3. CAMBIAR A LA PESTAÑA "ESTADÍSTICAS"
         selector_stats = 'a[data-analytics-alias="match-statistics"], a[role="tab"]:has-text("Estadísticas")'
         tab_stats = page.locator(selector_stats)
         if tab_stats.count() > 0:
@@ -149,6 +148,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
             except Exception:
                 pass
 
+        # Esperar a que el bloque de estadísticas se monte en el DOM
         try:
             page.wait_for_selector('[data-testid="statGroup"], [data-testid="wcl-statistics"], .tabContent__match-statistics', timeout=5000)
         except Exception:
@@ -156,7 +156,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
 
         # 4. EXTRAER EXCLUSIVAMENTE LAS ESTADÍSTICAS PRINCIPALES
         soup_s = BeautifulSoup(page.content(), "html.parser")
-        
+
         primer_grupo = None
         for grupo in soup_s.select('div[data-testid="statGroup"]'):
             titulo = grupo.select_one('[data-testid="wcl-headerSection-text"]')
@@ -168,11 +168,12 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
             grupos = soup_s.select('div[data-testid="statGroup"]')
             if grupos:
                 primer_grupo = grupos[0]
+            else:
+                primer_grupo = soup_s.select_one('div.tabContent__match-statistics') or soup_s
 
-        # EXTRACCIÓN LIMITADA ESTRICTAMENTE AL PRIMER GRUPO
         if primer_grupo:
-            # A. Filas estándar (xG, Posesión, Grandes ocasiones, Toques en el área, etc.)
-            for fila in primer_grupo.select('[data-testid="wcl-statistics"]'):
+            # A. Filas estándar (xG, Posesión, Pases, Faltas, etc.)
+            for fila in primer_grupo.select('[data-testid="wcl-statistics"], [class*="wcl-labelRow_"]'):
                 nombre_el = (
                     fila.select_one('[class*="wcl-name_"]') or
                     fila.select_one('[class*="wcl-label_"]') or
@@ -185,7 +186,7 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
                         datos_partido["Stats"][f"{nombre} (L)"] = vals[0]
                         datos_partido["Stats"][f"{nombre} (V)"] = vals[-1]
 
-            # B. Barras de remates (Remates a puerta, fuera, etc.)
+            # B. Barras de remates (Remates a puerta / fuera)
             for shot_bar in primer_grupo.select('[class*="wcl-shotOnTargetStats_"]'):
                 nombre_el = shot_bar.select_one('[class*="wcl-label_"]')
                 vals = [v.get_text(strip=True) for v in shot_bar.select('[class*="wcl-value_"]') if v.get_text(strip=True)]
@@ -195,8 +196,8 @@ def extraer_estadisticas_partido(playwright_context, url_partido: str) -> dict:
                         datos_partido["Stats"][f"{nombre} (L)"] = vals[0]
                         datos_partido["Stats"][f"{nombre} (V)"] = vals[-1]
 
-            # C. Córneres y tarjetas (Badges SVG)
-            for badge in primer_grupo.select('[class*="wcl-incidentValueBadge_"]'):
+            # C. Córneres y tarjetas (Badges SVG e incidentes sin restricciones de jerarquía)
+            for badge in primer_grupo.select('[class*="wcl-incidentValueBadge_"], [data-testid*="incident"]'):
                 spans = [s.get_text(strip=True) for s in badge.find_all("span") if s.get_text(strip=True)]
                 svg = badge.find("svg")
                 if len(spans) >= 2 and svg:

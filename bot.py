@@ -1,6 +1,4 @@
 import os
-import numpy 
-import pandas as pd
 import sys
 import time
 import requests

@@ -39,9 +39,9 @@ def cumple_criterios_alerta(partido: dict) -> bool:
         return False
 
     # 3. Filtro OBLIGATORIO: Debe tener al menos una estadística principal registrada
-    stats = partido.get("Stats", {})
-    if not stats or len(stats) == 0:
-        return False
+    #stats = partido.get("Stats", {})
+    #if not stats or len(stats) == 0:
+        #return False
 
     # 3. Filtro de cuotas o estadísticas
     if not partido.get("Stats") and partido.get("Cuotas") == "- - -":

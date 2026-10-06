@@ -38,11 +38,29 @@ def cumple_criterios_alerta(partido: dict) -> bool:
     if not marcador or marcador == "- - -":
         return False
 
+    # 3. Filtro OBLIGATORIO: Debe tener al menos una estadística principal registrada
+    stats = partido.get("Stats", {})
+    if not stats or len(stats) == 0:
+        return False
+
     # 3. Filtro de cuotas o estadísticas
     if not partido.get("Stats") and partido.get("Cuotas") == "- - -":
         return False
 
     return True
+
+
+    # 3. Filtro OBLIGATORIO: Contener al menos una métrica clave relevante
+    #stats = partido.get("Stats", {})
+    #if not stats:
+        #return False
+
+    #metricas_clave = ["posesión", "posesion", "goles esperados", "xg", "ocasiones", "córneres", "corner"]
+    #claves_existentes = " ".join(stats.keys()).lower()
+
+    #tiene_metrica_principal = any(m in claves_existentes for m in metricas_clave)
+    #if not tiene_metrica_principal:
+        #return False
     
 def formatear_mensaje_partido(reg: dict) -> str:
     """Da formato visual al mensaje con negritas y emojis."""

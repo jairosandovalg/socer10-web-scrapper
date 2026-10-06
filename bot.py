@@ -264,6 +264,13 @@ def ejecutar_escaneo():
             print(f"Partidos en vivo encontrados: {len(partidos)}. Procesando los primeros...")
             for p_div in partidos[:10]:
                 id_p = p_div.get('id').split('_')[-1]
+                #stage_el = p_div.select_one(".event__stage--block, [class*='stage']")
+                #estado_fila = stage_el.get_text(strip=True).upper() if stage_el else ""
+                
+                #if "FIN" in estado_fila or "FINALIZADO" in estado_fila:
+                    #print(f"Omitiendo partido finalizado: {id_p}")
+                    #continue
+                    
                 h_team = p_div.find("div", class_=lambda c: c and "home" in c.lower() and "participant" in c.lower())
                 a_team = p_div.find("div", class_=lambda c: c and "away" in c.lower() and "participant" in c.lower())
                 nombre_partido = f"{h_team.get_text(strip=True) if h_team else 'Local'} vs {a_team.get_text(strip=True) if a_team else 'Visitante'}"

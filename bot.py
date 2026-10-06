@@ -326,7 +326,7 @@ def ejecutar_escaneo():
                 return
 
             print(f"Partidos en vivo encontrados: {len(partidos)}. Procesando los primeros...")
-            for p_div in partidos[:10]:
+            for p_div in partidos:#[:10]:
                 id_p = p_div.get('id').split('_')[-1]
                 #stage_el = p_div.select_one(".event__stage--block, [class*='stage']")
                 #estado_fila = stage_el.get_text(strip=True).upper() if stage_el else ""

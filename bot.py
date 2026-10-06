@@ -98,64 +98,110 @@ def formatear_mensaje_partido(reg: dict) -> str:
     )
 
 def parsear_bloque_estadisticas(soup_bloque) -> dict:
-    """Parsea el bloque exacto de Estadísticas Principales."""
+    """Parsea el bloque de estadísticas permitiendo valores faltantes (-)."""
     stats = {}
 
-    # 1. Filas métricas estándar (xG, Posesión, Grandes ocasiones, Toques, Remates totales)
+    # 1. Filas métricas estándar (xG, Posesión, Grandes ocasiones, Toques, etc.)
     for fila in soup_bloque.select('div[data-testid="wcl-statistics"]'):
         etiqueta_el = fila.select_one(".wcl-label_sO4bA span, [data-testid='wcl-scores-simple-text-01'], .wcl-name_2lXWg")
+        if not etiqueta_el:
+            continue
+
+        nombre = etiqueta_el.get_text(strip=True)
         val_l_el = fila.select_one(".wcl-labelRow_42JBQ > div:first-child .wcl-value_Ywp3J")
         val_v_el = fila.select_one(".wcl-awayValue_smmfR .wcl-value_Ywp3J")
 
-        if etiqueta_el and val_l_el and val_v_el:
-            nombre = etiqueta_el.get_text(strip=True)
-            stats[f"{nombre} (L)"] = val_l_el.get_text(strip=True)
-            stats[f"{nombre} (V)"] = val_v_el.get_text(strip=True)
+        # Asigna el valor o '-' si no existe
+        stats[f"{nombre} (L)"] = val_l_el.get_text(strip=True) if val_l_el else "-"
+        stats[f"{nombre} (V)"] = val_v_el.get_text(strip=True) if val_v_el else "-"
 
     # 2. Remates fuera y Remates a puerta (bloque de portería)
     shot_container = soup_bloque.select_one('[class*="shotOnTargetStats_"]')
     if shot_container:
-        # 2.1 Remates fuera
-        off_target = shot_container.select_one('[class*="offTargetBar_"]')
-        if off_target:
-            label_el = off_target.select_one('[class*="wcl-label_"]')
-            vals = off_target.select('[class*="wcl-value_"]')
-            if label_el and len(vals) >= 2:
-                nombre = label_el.get_text(strip=True)
-                stats[f"{nombre} (L)"] = vals[0].get_text(strip=True)
-                stats[f"{nombre} (V)"] = vals[-1].get_text(strip=True)
+        for sub_class in ['[class*="offTargetBar_"]', '[class*="onTargetBar_"]']:
+            barra = shot_container.select_one(sub_class)
+            if barra:
+                label_el = barra.select_one('[class*="wcl-label_"]')
+                vals = barra.select('[class*="wcl-value_"]')
+                if label_el:
+                    nombre = label_el.get_text(strip=True)
+                    stats[f"{nombre} (L)"] = vals[0].get_text(strip=True) if len(vals) > 0 else "-"
+                    stats[f"{nombre} (V)"] = vals[-1].get_text(strip=True) if len(vals) > 1 else "-"
 
-        # 2.2 Remates a puerta
-        on_target = shot_container.select_one('[class*="onTargetBar_"]')
-        if on_target:
-            label_el = on_target.select_one('[class*="wcl-label_"]')
-            vals = on_target.select('[class*="wcl-value_"]')
-            if label_el and len(vals) >= 2:
-                nombre = label_el.get_text(strip=True)
-                stats[f"{nombre} (L)"] = vals[0].get_text(strip=True)
-                stats[f"{nombre} (V)"] = vals[-1].get_text(strip=True)
-
-    # 3. Córneres, Tarjetas amarillas y rojas (Badges SVG inferiores)
+    # 3. Córneres, Tarjetas amarillas y rojas (Badges SVG)
     for badge in soup_bloque.select('[class*="incidentValueBadge_"]'):
-        spans = [s.get_text(strip=True) for s in badge.select("span") if s.get_text(strip=True)]
         svg = badge.select_one("svg")
+        if not svg:
+            continue
 
-        if svg and len(spans) >= 2:
-            test_id = svg.get("data-testid", "").lower()
+        test_id = svg.get("data-testid", "").lower()
+        tipo = None
+        if "corner" in test_id:
+            tipo = "Córneres"
+        elif "yellow-card" in test_id or "yellow" in test_id:
+            tipo = "Tarjetas amarillas"
+        elif "red-card" in test_id or "red" in test_id:
+            tipo = "Tarjetas rojas"
 
-            tipo = None
-            if "corner" in test_id:
-                tipo = "Córneres"
-            elif "yellow-card" in test_id or "yellow" in test_id:
-                tipo = "Tarjetas amarillas"
-            elif "red-card" in test_id or "red" in test_id:
-                tipo = "Tarjetas rojas"
-
-            if tipo:
-                stats[f"{tipo} (L)"] = spans[0]
-                stats[f"{tipo} (V)"] = spans[-1]
+        if tipo:
+            spans = [s.get_text(strip=True) for s in badge.select("span") if s.get_text(strip=True)]
+            # Si solo hay un span reportado o ninguno, se asigna '-' según corresponda
+            stats[f"{tipo} (L)"] = spans[0] if len(spans) >= 1 else "-"
+            stats[f"{tipo} (V)"] = spans[-1] if len(spans) >= 2 else "-"
 
     return stats
+
+
+def formatear_mensaje_partido(reg: dict) -> str:
+    """Formatea el mensaje. Muestra métricas clave con '-' si no existen en el partido."""
+    stats = reg.get("Stats", {})
+    
+    # Lista de métricas prioritarias que quieres ver siempre en el reporte
+    metricas_fijas = [
+        "Posesión de balón",
+        "Goles esperados (xG)",
+        "Remates a puerta",
+        "Remates fuera",
+        "Córneres",
+        "Tarjetas amarillas"
+    ]
+    
+    lineas = []
+    metricas_procesadas = set()
+
+    # 1. Procesar primero las métricas fijas asegurando formato L | V
+    for m in metricas_fijas:
+        # Busca coincidencia exacta o parcial (ej. 'Posesión')
+        key_l = next((k for k in stats.keys() if m.lower() in k.lower() and "(L)" in k), None)
+        key_v = next((k for k in stats.keys() if m.lower() in k.lower() and "(V)" in k), None)
+
+        val_l = stats.get(key_l, "-") if key_l else "-"
+        val_v = stats.get(key_v, "-") if key_v else "-"
+
+        lineas.append(f"• <b>{m}:</b> {val_l} | {val_v}")
+        if key_l: metricas_procesadas.add(key_l.replace(" (L)", ""))
+        if key_v: metricas_procesadas.add(key_v.replace(" (V)", ""))
+
+    # 2. Agregar cualquier otra métrica adicional que haya llegado y no esté en las fijas
+    for k, v in stats.items():
+        base_name = k.replace(" (L)", "").replace(" (V)", "")
+        if base_name not in metricas_procesadas and not any(f.lower() in base_name.lower() for f in metricas_fijas):
+            val_l = stats.get(f"{base_name} (L)", "-")
+            val_v = stats.get(f"{base_name} (V)", "-")
+            lineas.append(f"• <b>{base_name}:</b> {val_l} | {val_v}")
+            metricas_procesadas.add(base_name)
+
+    stats_texto = "\n\n📊 <b>Estadísticas Principales (L | V):</b>\n" + "\n".join(lineas)
+
+    return (
+        f"⚽ <b>ALERTA DE PARTIDO</b>\n\n"
+        f"⚔️ <b>Partido:</b> {reg['Partido en Vivo']}\n"
+        f"🔢 <b>Marcador:</b> {reg['Marcador']}\n"
+        f"⏱ <b>Minuto:</b> {reg['Minuto']} ({reg['Tiempo/Estado']})\n"
+        f"📈 <b>Cuotas (1X2):</b> {reg['Cuotas']}"
+        f"{stats_texto}"
+    )
+
 
 def extraer_datos_completos(playwright_context, url_base_partido: str) -> dict:
     """Extrae marcador, cuotas 1X2 y navega a la pestaña de estadísticas."""

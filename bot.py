@@ -25,15 +25,25 @@ def enviar_alerta_telegram(mensaje: str) -> bool:
         return False
 
 def cumple_criterios_alerta(partido: dict) -> bool:
-    """Verifica si el partido tiene datos suficientes para enviar alerta."""
+    """Verifica si el partido tiene datos suficientes y está en juego."""
+    # 1. Filtro de estado: descartar partidos finalizados o no deseados
+    estado = partido.get("Tiempo/Estado", "").upper()
+    estados_excluidos = ["FINALIZADO", "FIN", "FT", "APL.", "POSTP."]
+    
+    if any(excluido in estado for excluido in estados_excluidos):
+        return False
+
+    # 2. Filtro de marcador existente
     marcador = partido.get("Marcador", "")
     if not marcador or marcador == "- - -":
         return False
-    # Filtro: debe tener al menos estadísticas o cuotas válidas
+
+    # 3. Filtro de cuotas o estadísticas
     if not partido.get("Stats") and partido.get("Cuotas") == "- - -":
         return False
-    return True
 
+    return True
+    
 def formatear_mensaje_partido(reg: dict) -> str:
     """Da formato visual al mensaje con negritas y emojis."""
     stats = reg.get("Stats", {})
